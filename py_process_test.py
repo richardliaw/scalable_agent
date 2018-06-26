@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Tests py_process.py."""
 
 from __future__ import absolute_import
@@ -27,246 +26,238 @@ import tensorflow as tf
 
 
 class PyProcessTest(tf.test.TestCase):
+    def test_small(self):
+        class Example(object):
+            def __init__(self, a):
+                self._a = a
 
-  def test_small(self):
+            def inc(self):
+                self._a += 1
 
-    class Example(object):
+            def compute(self, b):
+                return np.array(self._a + b, dtype=np.int32)
 
-      def __init__(self, a):
-        self._a = a
+            @staticmethod
+            def _tensor_specs(method_name, unused_args,
+                              unused_constructor_kwargs):
+                if method_name == 'compute':
+                    return tf.contrib.framework.TensorSpec([], tf.int32)
+                elif method_name == 'inc':
+                    return ()
 
-      def inc(self):
-        self._a += 1
+        with tf.Graph().as_default():
+            p = py_process.PyProcess(Example, 1)
+            inc = p.proxy.inc()
+            compute = p.proxy.compute(2)
 
-      def compute(self, b):
-        return np.array(self._a + b, dtype=np.int32)
+            with tf.train.SingularMonitoredSession(
+                    hooks=[py_process.PyProcessHook()]) as session:
+                self.assertTrue(isinstance(inc, tf.Operation))
+                session.run(inc)
 
-      @staticmethod
-      def _tensor_specs(method_name, unused_args, unused_constructor_kwargs):
-        if method_name == 'compute':
-          return tf.contrib.framework.TensorSpec([], tf.int32)
-        elif method_name == 'inc':
-          return ()
+                self.assertEqual([], compute.shape)
+                self.assertEqual(4, session.run(compute))
 
-    with tf.Graph().as_default():
-      p = py_process.PyProcess(Example, 1)
-      inc = p.proxy.inc()
-      compute = p.proxy.compute(2)
+    def test_threading(self):
+        class Example(object):
+            def __init__(self):
+                pass
 
-      with tf.train.SingularMonitoredSession(
-          hooks=[py_process.PyProcessHook()]) as session:
-        self.assertTrue(isinstance(inc, tf.Operation))
-        session.run(inc)
+            def wait(self):
+                time.sleep(.2)
+                return None
 
-        self.assertEqual([], compute.shape)
-        self.assertEqual(4, session.run(compute))
+            @staticmethod
+            def _tensor_specs(method_name, unused_args,
+                              unused_constructor_kwargs):
+                if method_name == 'wait':
+                    return tf.contrib.framework.TensorSpec([], tf.int32)
 
-  def test_threading(self):
+        with tf.Graph().as_default():
+            p = py_process.PyProcess(Example)
+            wait = p.proxy.wait()
 
-    class Example(object):
+            hook = py_process.PyProcessHook()
+            with tf.train.SingularMonitoredSession(hooks=[hook]) as session:
 
-      def __init__(self):
-        pass
+                def run():
+                    with self.assertRaises(tf.errors.OutOfRangeError):
+                        session.run(wait)
 
-      def wait(self):
-        time.sleep(.2)
-        return None
+                t = self.checkedThread(target=run)
+                t.start()
+                time.sleep(.1)
+            t.join()
 
-      @staticmethod
-      def _tensor_specs(method_name, unused_args, unused_constructor_kwargs):
-        if method_name == 'wait':
-          return tf.contrib.framework.TensorSpec([], tf.int32)
+    def test_args(self):
+        class Example(object):
+            def __init__(self, dim0):
+                self._dim0 = dim0
 
-    with tf.Graph().as_default():
-      p = py_process.PyProcess(Example)
-      wait = p.proxy.wait()
+            def compute(self, dim1):
+                return np.zeros([self._dim0, dim1], dtype=np.int32)
 
-      hook = py_process.PyProcessHook()
-      with tf.train.SingularMonitoredSession(hooks=[hook]) as session:
+            @staticmethod
+            def _tensor_specs(method_name, kwargs, constructor_kwargs):
+                dim0 = constructor_kwargs['dim0']
+                dim1 = kwargs['dim1']
+                if method_name == 'compute':
+                    return tf.contrib.framework.TensorSpec([dim0, dim1],
+                                                           tf.int32)
 
-        def run():
-          with self.assertRaises(tf.errors.OutOfRangeError):
-            session.run(wait)
+        with tf.Graph().as_default():
+            p = py_process.PyProcess(Example, 1)
+            result = p.proxy.compute(2)
 
-        t = self.checkedThread(target=run)
-        t.start()
-        time.sleep(.1)
-      t.join()
+            with tf.train.SingularMonitoredSession(
+                    hooks=[py_process.PyProcessHook()]) as session:
+                self.assertEqual([1, 2], result.shape)
+                self.assertAllEqual([[0, 0]], session.run(result))
 
-  def test_args(self):
+    def test_error_handling_constructor(self):
+        class Example(object):
+            def __init__(self):
+                raise ValueError('foo')
 
-    class Example(object):
+            def something(self):
+                pass
 
-      def __init__(self, dim0):
-        self._dim0 = dim0
+            @staticmethod
+            def _tensor_specs(method_name, unused_kwargs,
+                              unused_constructor_kwargs):
+                if method_name == 'something':
+                    return ()
 
-      def compute(self, dim1):
-        return np.zeros([self._dim0, dim1], dtype=np.int32)
+        with tf.Graph().as_default():
+            py_process.PyProcess(Example, 1)
 
-      @staticmethod
-      def _tensor_specs(method_name, kwargs, constructor_kwargs):
-        dim0 = constructor_kwargs['dim0']
-        dim1 = kwargs['dim1']
-        if method_name == 'compute':
-          return tf.contrib.framework.TensorSpec([dim0, dim1], tf.int32)
+            with self.assertRaisesRegexp(Exception, 'foo'):
+                with tf.train.SingularMonitoredSession(
+                        hooks=[py_process.PyProcessHook()]):
+                    pass
 
-    with tf.Graph().as_default():
-      p = py_process.PyProcess(Example, 1)
-      result = p.proxy.compute(2)
+    def test_error_handling_method(self):
+        class Example(object):
+            def __init__(self):
+                pass
 
-      with tf.train.SingularMonitoredSession(
-          hooks=[py_process.PyProcessHook()]) as session:
-        self.assertEqual([1, 2], result.shape)
-        self.assertAllEqual([[0, 0]], session.run(result))
+            def something(self):
+                raise ValueError('foo')
 
-  def test_error_handling_constructor(self):
+            @staticmethod
+            def _tensor_specs(method_name, unused_kwargs,
+                              unused_constructor_kwargs):
+                if method_name == 'something':
+                    return ()
 
-    class Example(object):
+        with tf.Graph().as_default():
+            p = py_process.PyProcess(Example, 1)
+            result = p.proxy.something()
 
-      def __init__(self):
-        raise ValueError('foo')
+            with tf.train.SingularMonitoredSession(
+                    hooks=[py_process.PyProcessHook()]) as session:
+                with self.assertRaisesRegexp(Exception, 'foo'):
+                    session.run(result)
 
-      def something(self):
-        pass
+    def test_close(self):
+        with tempfile.NamedTemporaryFile() as tmp:
 
-      @staticmethod
-      def _tensor_specs(method_name, unused_kwargs, unused_constructor_kwargs):
-        if method_name == 'something':
-          return ()
+            class Example(object):
+                def __init__(self, filename):
+                    self._filename = filename
 
-    with tf.Graph().as_default():
-      py_process.PyProcess(Example, 1)
+                def close(self):
+                    with tf.gfile.Open(self._filename, 'w') as f:
+                        f.write('was_closed')
 
-      with self.assertRaisesRegexp(Exception, 'foo'):
-        with tf.train.SingularMonitoredSession(
-            hooks=[py_process.PyProcessHook()]):
-          pass
+            with tf.Graph().as_default():
+                py_process.PyProcess(Example, tmp.name)
 
-  def test_error_handling_method(self):
+                with tf.train.SingularMonitoredSession(
+                        hooks=[py_process.PyProcessHook()]):
+                    pass
 
-    class Example(object):
+            self.assertEqual('was_closed', tmp.read())
 
-      def __init__(self):
-        pass
+    def test_close_on_error(self):
+        with tempfile.NamedTemporaryFile() as tmp:
 
-      def something(self):
-        raise ValueError('foo')
+            class Example(object):
+                def __init__(self, filename):
+                    self._filename = filename
 
-      @staticmethod
-      def _tensor_specs(method_name, unused_kwargs, unused_constructor_kwargs):
-        if method_name == 'something':
-          return ()
+                def something(self):
+                    raise ValueError('foo')
 
-    with tf.Graph().as_default():
-      p = py_process.PyProcess(Example, 1)
-      result = p.proxy.something()
+                def close(self):
+                    with tf.gfile.Open(self._filename, 'w') as f:
+                        f.write('was_closed')
 
-      with tf.train.SingularMonitoredSession(
-          hooks=[py_process.PyProcessHook()]) as session:
-        with self.assertRaisesRegexp(Exception, 'foo'):
-          session.run(result)
+                @staticmethod
+                def _tensor_specs(method_name, unused_kwargs,
+                                  unused_constructor_kwargs):
+                    if method_name == 'something':
+                        return ()
 
-  def test_close(self):
-    with tempfile.NamedTemporaryFile() as tmp:
-      class Example(object):
+            with tf.Graph().as_default():
+                p = py_process.PyProcess(Example, tmp.name)
+                result = p.proxy.something()
 
-        def __init__(self, filename):
-          self._filename = filename
+                with tf.train.SingularMonitoredSession(
+                        hooks=[py_process.PyProcessHook()]) as session:
+                    with self.assertRaisesRegexp(Exception, 'foo'):
+                        session.run(result)
 
-        def close(self):
-          with tf.gfile.Open(self._filename, 'w') as f:
-            f.write('was_closed')
-
-      with tf.Graph().as_default():
-        py_process.PyProcess(Example, tmp.name)
-
-        with tf.train.SingularMonitoredSession(
-            hooks=[py_process.PyProcessHook()]):
-          pass
-
-      self.assertEqual('was_closed', tmp.read())
-
-  def test_close_on_error(self):
-    with tempfile.NamedTemporaryFile() as tmp:
-
-      class Example(object):
-
-        def __init__(self, filename):
-          self._filename = filename
-
-        def something(self):
-          raise ValueError('foo')
-
-        def close(self):
-          with tf.gfile.Open(self._filename, 'w') as f:
-            f.write('was_closed')
-
-        @staticmethod
-        def _tensor_specs(method_name, unused_kwargs,
-                          unused_constructor_kwargs):
-          if method_name == 'something':
-            return ()
-
-      with tf.Graph().as_default():
-        p = py_process.PyProcess(Example, tmp.name)
-        result = p.proxy.something()
-
-        with tf.train.SingularMonitoredSession(
-            hooks=[py_process.PyProcessHook()]) as session:
-          with self.assertRaisesRegexp(Exception, 'foo'):
-            session.run(result)
-
-      self.assertEqual('was_closed', tmp.read())
+            self.assertEqual('was_closed', tmp.read())
 
 
 class PyProcessBenchmarks(tf.test.Benchmark):
+    class Example(object):
+        def __init__(self):
+            self._result = np.random.randint(0, 256, (72, 96, 3), np.uint8)
 
-  class Example(object):
+        def compute(self, unused_a):
+            return self._result
 
-    def __init__(self):
-      self._result = np.random.randint(0, 256, (72, 96, 3), np.uint8)
+        @staticmethod
+        def _tensor_specs(method_name, unused_args, unused_constructor_kwargs):
+            if method_name == 'compute':
+                return tf.contrib.framework.TensorSpec([72, 96, 3], tf.uint8)
 
-    def compute(self, unused_a):
-      return self._result
+    def benchmark_one(self):
+        with tf.Graph().as_default():
+            p = py_process.PyProcess(PyProcessBenchmarks.Example)
+            compute = p.proxy.compute(2)
 
-    @staticmethod
-    def _tensor_specs(method_name, unused_args, unused_constructor_kwargs):
-      if method_name == 'compute':
-        return tf.contrib.framework.TensorSpec([72, 96, 3], tf.uint8)
+            with tf.train.SingularMonitoredSession(
+                    hooks=[py_process.PyProcessHook()]) as session:
 
-  def benchmark_one(self):
-    with tf.Graph().as_default():
-      p = py_process.PyProcess(PyProcessBenchmarks.Example)
-      compute = p.proxy.compute(2)
+                self.run_op_benchmark(
+                    name='process_one',
+                    sess=session,
+                    op_or_tensor=compute,
+                    burn_iters=10,
+                    min_iters=5000)
 
-      with tf.train.SingularMonitoredSession(
-          hooks=[py_process.PyProcessHook()]) as session:
+    def benchmark_many(self):
+        with tf.Graph().as_default():
+            ps = [
+                py_process.PyProcess(PyProcessBenchmarks.Example)
+                for _ in xrange(200)
+            ]
+            compute_ops = [p.proxy.compute(2) for p in ps]
+            compute = tf.group(*compute_ops)
 
-        self.run_op_benchmark(
-            name='process_one',
-            sess=session,
-            op_or_tensor=compute,
-            burn_iters=10,
-            min_iters=5000)
+            with tf.train.SingularMonitoredSession(
+                    hooks=[py_process.PyProcessHook()]) as session:
 
-  def benchmark_many(self):
-    with tf.Graph().as_default():
-      ps = [
-          py_process.PyProcess(PyProcessBenchmarks.Example) for _ in xrange(200)
-      ]
-      compute_ops = [p.proxy.compute(2) for p in ps]
-      compute = tf.group(*compute_ops)
-
-      with tf.train.SingularMonitoredSession(
-          hooks=[py_process.PyProcessHook()]) as session:
-
-        self.run_op_benchmark(
-            name='process_many',
-            sess=session,
-            op_or_tensor=compute,
-            burn_iters=10,
-            min_iters=500)
+                self.run_op_benchmark(
+                    name='process_many',
+                    sess=session,
+                    op_or_tensor=compute,
+                    burn_iters=10,
+                    min_iters=500)
 
 
 if __name__ == '__main__':
-  tf.test.main()
+    tf.test.main()

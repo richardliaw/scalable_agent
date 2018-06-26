@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Utilities for DMLab-30."""
 
 from __future__ import absolute_import
@@ -22,7 +21,6 @@ import collections
 
 import numpy as np
 import tensorflow as tf
-
 
 LEVEL_MAPPING = collections.OrderedDict([
     ('rooms_collect_good_objects_train', 'rooms_collect_good_objects_test'),
@@ -163,56 +161,57 @@ ALL_LEVELS = frozenset([
 
 
 def _transform_level_returns(level_returns):
-  """Converts training level names to test level names."""
-  new_level_returns = {}
-  for level_name, returns in level_returns.iteritems():
-    new_level_returns[LEVEL_MAPPING.get(level_name, level_name)] = returns
+    """Converts training level names to test level names."""
+    new_level_returns = {}
+    for level_name, returns in level_returns.iteritems():
+        new_level_returns[LEVEL_MAPPING.get(level_name, level_name)] = returns
 
-  test_set = set(LEVEL_MAPPING.values())
-  diff = test_set - set(new_level_returns.keys())
-  if diff:
-    raise ValueError('Missing levels: %s' % list(diff))
+    test_set = set(LEVEL_MAPPING.values())
+    diff = test_set - set(new_level_returns.keys())
+    if diff:
+        raise ValueError('Missing levels: %s' % list(diff))
 
-  for level_name, returns in new_level_returns.iteritems():
-    if level_name in test_set:
-      if not returns:
-        raise ValueError('Missing returns for level: \'%s\': ' % level_name)
-    else:
-      tf.logging.info('Skipping level %s for calculation.', level_name)
+    for level_name, returns in new_level_returns.iteritems():
+        if level_name in test_set:
+            if not returns:
+                raise ValueError(
+                    'Missing returns for level: \'%s\': ' % level_name)
+        else:
+            tf.logging.info('Skipping level %s for calculation.', level_name)
 
-  return new_level_returns
+    return new_level_returns
 
 
 def compute_human_normalized_score(level_returns, per_level_cap):
-  """Computes human normalized score.
+    """Computes human normalized score.
 
-  Levels that have different training and test versions, will use the returns
-  for the training level to calculate the score. E.g.
-  'rooms_collect_good_objects_train' will be used for
-  'rooms_collect_good_objects_test'. All returns for levels not in DmLab-30
-  will be ignored.
+    Levels that have different training and test versions, will use the returns
+    for the training level to calculate the score. E.g.
+    'rooms_collect_good_objects_train' will be used for
+    'rooms_collect_good_objects_test'. All returns for levels not in DmLab-30
+    will be ignored.
 
-  Args:
-    level_returns: A dictionary from level to list of episode returns.
-    per_level_cap: A percentage cap (e.g. 100.) on the per level human
-      normalized score. If None, no cap is applied.
+    Args:
+        level_returns: A dictionary from level to list of episode returns.
+        per_level_cap: A percentage cap (e.g. 100.) on the per level human
+            normalized score. If None, no cap is applied.
 
-  Returns:
-    A float with the human normalized score in percentage.
+    Returns:
+        A float with the human normalized score in percentage.
 
-  Raises:
-    ValueError: If a level is missing from `level_returns` or has no returns.
-  """
-  new_level_returns = _transform_level_returns(level_returns)
+    Raises:
+        ValueError: If a level is missing from `level_returns` or has no returns.
+    """
+    new_level_returns = _transform_level_returns(level_returns)
 
-  def human_normalized_score(level_name, returns):
-    score = np.mean(returns)
-    human = HUMAN_SCORES[level_name]
-    random = RANDOM_SCORES[level_name]
-    human_normalized_score = (score - random) / (human - random) * 100
-    if per_level_cap is not None:
-      human_normalized_score = min(human_normalized_score, per_level_cap)
-    return human_normalized_score
+    def human_normalized_score(level_name, returns):
+        score = np.mean(returns)
+        human = HUMAN_SCORES[level_name]
+        random = RANDOM_SCORES[level_name]
+        human_normalized_score = (score - random) / (human - random) * 100
+        if per_level_cap is not None:
+            human_normalized_score = min(human_normalized_score, per_level_cap)
+        return human_normalized_score
 
-  return np.mean(
-      [human_normalized_score(k, v) for k, v in new_level_returns.items()])
+    return np.mean(
+        [human_normalized_score(k, v) for k, v in new_level_returns.items()])
